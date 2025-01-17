@@ -1,204 +1,184 @@
+#define STRICT
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
 
-#include <winsock2.h>
+#include <WinSock2.h>
+#include <Windows.h>
+#include <tchar.h>
+#include <thread>
 #include <iostream>
-#include <string>
 
-#pragma comment (lib, "WSock32.lib")
+#pragma comment(lib, "ws2_32.lib")
 
-//サーバー関数
-void ChatServer(void){
-    SOCKET listen_s;
-    SOCKET s;
-    SOCKADDR_IN saddr;
-    SOCKADDR_IN from;
-    int fromlen;
-    u_short uport;
+#include "resource.h"
 
-    //ポート番号の入力
-    std::cout << "使用するポート番号 : ";
-    std::cin >> uport;
-    std::cin.ignore();
+#define PORT 8000
+#define BUFFER_SIZE 1024
+#define SYNC_TIMER_ID 1
+#define SYNC_INTERVAL_MS 30  // 30ミリ秒ごとに同期
 
-    //リスンソケットをオープン
-    listen_s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listen_s == INVALID_SOCKET) {
-        std::cout << "リスンソケットオープンエラー" << std::endl;
-        WSACleanup();
-        return;
+HINSTANCE hInstanceGlobal;
+HBITMAP serverBitmap, clientBitmap;
+POINT serverBitmapPos = { 50, 50 };
+POINT clientBitmapPos = { 150, 50 };
+SOCKET clientSocket;
+bool isRunning = true;
+
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+
+void LoadBitmaps() {
+    serverBitmap = LoadBitmap(hInstanceGlobal, MAKEINTRESOURCE(101));  // サーバー用ビットマップ
+    clientBitmap = LoadBitmap(hInstanceGlobal, MAKEINTRESOURCE(102));  // クライアント用ビットマップ
+
+    if (!serverBitmap || !clientBitmap) {
+        MessageBox(NULL, _T("ビットマップのロードに失敗"), _T("エラー"), MB_ICONERROR);
     }
+}
 
-    std::cout << "リスンソケットをオープンしました" << std::endl;
+void NetworkSyncThread() {
+    char buffer[BUFFER_SIZE];
 
-    //ソケットに名前を付ける
-    memset(&saddr, 0, sizeof(SOCKADDR_IN));
-    saddr.sin_family = AF_INET;//アドレスファミリ
-    saddr.sin_port = htons(uport);//ポート番号
-    saddr.sin_addr.s_addr = INADDR_ANY;//任意のIPアドレスを受け入れる
-
-    if (bind(listen_s, (SOCKADDR*)&saddr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR) {
-        std::cout << "bindエラー" << std::endl;
-        closesocket(listen_s);
-        return;
-    }
-    std::cout << "bind成功です" << std::endl;
-
-    //クライアントからの接続待ちの状態にする
-    if (listen(listen_s, SOMAXCONN) == SOCKET_ERROR) {
-        std::cout << "listenエラー" << std::endl;
-        closesocket(listen_s);
-        return;
-    }
-
-    std::cout << "listen成功" << std::endl;
-
-    //接続待機する
-    std::cout << "クライアント接続を待機します" << std::endl;
-
-    fromlen = (int)sizeof(from);
-    s = accept(listen_s, (SOCKADDR*)&from, &fromlen);  // 修正
-
-    if (s == INVALID_SOCKET) {
-        std::cout << "クライアント接続エラー" << std::endl;
-        closesocket(listen_s);
-        return;
-    }
-
-    std::cout << inet_ntoa(from.sin_addr) << "が接続してきました" << std::endl;
-    std::cout << "クライアント接続に成功" << std::endl;
-
-    //リスンソケットはもう不要
-    closesocket(listen_s);
-
-    //チャット開始
-    std::cout << "チャット開始" << std::endl;
-
-    char buffer[1024];
-    while (1) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytesReceived = recv(s, buffer, sizeof(buffer), 0);
-        if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
-            std::cout << "接続が切断されました" << std::endl;
+    while (isRunning) {
+        // サーバー側のビットマップ位置を送信
+        sprintf_s(buffer, "%d %d", serverBitmapPos.x, serverBitmapPos.y);
+        if (send(clientSocket, buffer, sizeof(buffer), 0) == SOCKET_ERROR) {
+            std::cerr << "データ送信に失敗しました。" << std::endl;
             break;
         }
 
-        std::cout << "クライアント : " << buffer << std::endl;
-
-        std::cout << "サーバー : ";
-        std::string message;
-        std::getline(std::cin, message);
-
-        //データ送信
-        send(s, message.c_str(), (int)message.length(), 0);
-    }
-
-    //ソケットを閉じる
-    closesocket(s);
-}
-
-//クライアント関数
-void ChatClient(){
-    SOCKET s;
-    SOCKADDR_IN saddr;
-    u_short uport;
-    char szServer[1024] = { 0 };
-    unsigned int addr;
-
-    //ポート番号の入力
-    std::cout << "使用するポート番号 : ";
-    std::cin >> uport;
-    std::cin.ignore();
-
-    //サーバのIPアドレスを入力
-    std::cout << "IPアドレス : ";
-    std::cin >> szServer;
-    std::cin.ignore();
-
-    //ソケットをオープン
-    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) {
-        std::cout << "ソケットオープンエラー" << std::endl;
-        return;
-    }
-
-    //サーバーを名前で取得する
-    HOSTENT* lpHost;
-    lpHost = gethostbyname(szServer);
-
-    if (lpHost == NULL) {
-        // サーバーをIPアドレスで取得する
-        addr = inet_addr(szServer);
-        lpHost = gethostbyaddr((char*)&addr, 4, AF_INET);
-    }
-
-    //クライアントソケットをサーバーに接続
-    memset(&saddr, 0, sizeof(SOCKADDR_IN));
-    saddr.sin_family = AF_INET;//アドレスファミリ
-    saddr.sin_port = htons(uport);//ポート番号
-    memcpy(&saddr.sin_addr, lpHost->h_addr_list[0], lpHost->h_length);//サーバーのIPアドレスをセット
-
-    if (connect(s, (SOCKADDR*)&saddr, sizeof(saddr)) == SOCKET_ERROR) {
-        std::cout << "サーバーと接続失敗" << std::endl;
-        closesocket(s);
-        return;
-    }
-
-    std::cout << "サーバーに接続成功" << std::endl;
-
-    char buffer[1024];
-    while (1) {
-        std::cout << "クライアント : ";
-        std::string message;
-        std::getline(std::cin, message);
-
-        //データ送信
-        send(s, message.c_str(), (int)message.length(), 0);
-
-        memset(buffer, 0, sizeof(buffer));
-        
-        //データ受信
-        int bytesReceived = recv(s, buffer, sizeof(buffer), 0);
-        if (bytesReceived == SOCKET_ERROR || bytesReceived == 0) {
-            std::cout << "接続が切断されました" << std::endl;
+        // クライアント側のビットマップ位置を受信
+        if (recv(clientSocket, buffer, sizeof(buffer), 0) > 0) {
+            sscanf_s(buffer, "%d %d", &clientBitmapPos.x, &clientBitmapPos.y);
+        }
+        else {
+            std::cerr << "データ受信に失敗しました。" << std::endl;
             break;
         }
 
-        std::cout << "サーバー : " << buffer << std::endl;
+        Sleep(SYNC_INTERVAL_MS);
     }
 
-    //ソケットを閉じる
-    closesocket(s);
+    closesocket(clientSocket);
 }
 
-//メイン関数
-int main(void)
-{
+int APIENTRY main(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow) {
+    hInstanceGlobal = hInstance;
+
     WSADATA wsaData;
-    int mode;
-
-    //WinSockの初期化
-    if (WSAStartup(MAKEWORD(1, 1), &wsaData) != 0) {
-        // 初期化エラー
-        std::cout << "WinSockの初期化に失敗しました" << std::endl;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        MessageBox(NULL, _T("WSAStartupに失敗"), _T("エラー"), MB_ICONERROR);
         return 1;
     }
 
-    //サーバーか or クライアント
-    std::cout << "サーバーなら0を入力 クライアントなら1を入力 : ";
-    std::cin >> mode;
-    std::cin.ignore();
-
-    if (mode == 0) {
-        //サーバーとして起動
-        ChatServer();
-    }
-    else {
-        //クライアントとして起動
-        ChatClient();
+    SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket == INVALID_SOCKET) {
+        MessageBox(NULL, _T("ソケットの作成に失敗"), _T("エラー"), MB_ICONERROR);
+        WSACleanup();
+        return 1;
     }
 
-    //WinSockの終了処理
+    sockaddr_in serverAddr = {};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(PORT);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        MessageBox(NULL, _T("ソケットのバインドに失敗"), _T("エラー"), MB_ICONERROR);
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    if (listen(serverSocket, 1) == SOCKET_ERROR) {
+        MessageBox(NULL, _T("ソケットのリスンに失敗"), _T("エラー"), MB_ICONERROR);
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    MessageBox(NULL, _T("クライアントの接続を待機中..."), _T("サーバー"), MB_OK);
+
+    sockaddr_in clientAddr = {};
+    int clientAddrSize = sizeof(clientAddr);
+    clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrSize);
+    if (clientSocket == INVALID_SOCKET) {
+        MessageBox(NULL, _T("クライアントの接続に失敗"), _T("エラー"), MB_ICONERROR);
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+
+    closesocket(serverSocket);
+
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = _T("ServerWindow");
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    RegisterClass(&wc);
+
+    HWND hwnd = CreateWindow(wc.lpszClassName, _T("サーバー: Network Bitmap"), WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
+
+    ShowWindow(hwnd, nCmdShow);
+    UpdateWindow(hwnd);
+
+    LoadBitmaps();
+
+    std::thread networkThread(NetworkSyncThread);
+    networkThread.detach();
+
+    SetTimer(hwnd, SYNC_TIMER_ID, SYNC_INTERVAL_MS, NULL);
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    isRunning = false;
+    closesocket(clientSocket);
     WSACleanup();
 
-    return 0;
+    return (int)msg.wParam;
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_TIMER: {
+        InvalidateRect(hwnd, NULL, TRUE);
+        break;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        HDC hdcMem = CreateCompatibleDC(hdc);
+
+        SelectObject(hdcMem, serverBitmap);
+        BitBlt(hdc, serverBitmapPos.x, serverBitmapPos.y, 100, 100, hdcMem, 0, 0, SRCCOPY);
+
+        SelectObject(hdcMem, clientBitmap);
+        BitBlt(hdc, clientBitmapPos.x, clientBitmapPos.y, 100, 100, hdcMem, 0, 0, SRCCOPY);
+
+        DeleteDC(hdcMem);
+        EndPaint(hwnd, &ps);
+        break;
+    }
+    case WM_KEYDOWN: {
+        switch (wparam) {
+        case VK_LEFT: serverBitmapPos.x -= 5; break;
+        case VK_RIGHT: serverBitmapPos.x += 5; break;
+        case VK_UP: serverBitmapPos.y -= 5; break;
+        case VK_DOWN: serverBitmapPos.y += 5; break;
+        }
+        InvalidateRect(hwnd, NULL, TRUE);
+        break;
+    }
+    case WM_DESTROY: {
+        PostQuitMessage(0);
+        break;
+    }
+    }
+    return DefWindowProc(hwnd, msg, wparam, lparam);
 }
